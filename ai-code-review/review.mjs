@@ -12,6 +12,7 @@ import { getJiraDetails } from "./getJiraDescription.mjs";
 (async () => {
   try {
     const diffText = await getChangedFileVersions();
+    console.log("diffText", diffText);
     const jiraContext = await getJiraDetails("CRM-3");
     const allComments = [];
 
