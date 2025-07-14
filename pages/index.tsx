@@ -32,6 +32,16 @@ export default function Home({ greeting }) {
               You can customize this card further to display user info, dynamic
               content, or API-driven data.
             </Typography>
+
+            <h2 style={{ color: "green", fontWeight: "bold" }}>
+              Raw HTML Section
+            </h2>
+            <p>This section is written with standard HTML tags.</p>
+            <ul>
+              <li>It does not use MUI components</li>
+              <li>It should be replaced by MUI equivalents</li>
+              <li>This is to test your AI code review assistant</li>
+            </ul>
           </CardContent>
 
           <CardActions sx={{ justifyContent: "flex-end", px: 2, pb: 2 }}>
