@@ -1,0 +1,39 @@
+name: AI Code Review
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  run-on-label:
+    if: contains(github.event.pull_request.labels.*.name, 'ai-code-review')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ github.base_ref }}
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Create .env file
+        run: |
+          cat <<EOF > .env
+          GITHUB_TOKEN=${{ secrets.MY_GITHUB_TOKEN }}
+          REPO_OWNER=${{ github.repository_owner }}
+          REPO_NAME=${{ github.event.pull_request.base.repo.name }}
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          GITHUB_API_URL=https://api.github.com
+          EOF
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run AI Code Review Bot
+        run: node ai-code-review/review.js
