@@ -34,13 +34,13 @@ export default function Home({ greeting }) {
             </Typography>
 
             <h2 style={{ color: "green", fontWeight: "bold" }}>
-              Raw HTML Section
+              Hi welcome to HTML
             </h2>
-            <p>This section is written with standard HTML tags.</p>
+            <p>This is Home Page</p>
             <ul>
-              <li>It does not use MUI components</li>
-              <li>It should be replaced by MUI equivalents</li>
-              <li>This is to test your AI code review assistant</li>
+              <li>Its a good UI</li>
+              <li>Hey</li>
+              <li>How are You ?</li>
             </ul>
           </CardContent>
 
