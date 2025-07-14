@@ -19,7 +19,6 @@ const {
 
 const git = simpleGit();
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
-
 export async function getChangedFileVersions() {
   if (!REPO_OWNER || !REPO_NAME || !PR_NUMBER) {
     throw new Error("❌ Missing GitHub env vars");
@@ -44,7 +43,7 @@ export async function getChangedFileVersions() {
     let oldCode = null;
     let newCode = null;
 
-    // Get old code from BASE_REF (e.g., main)
+    // Get old code from main branch
     try {
       if (status !== "added") {
         oldCode = await git.show([`${BASE_REF}:${filename}`]);
@@ -55,17 +54,12 @@ export async function getChangedFileVersions() {
       );
     }
 
-    // Get new code from working directory first
+    // Always get new code from HEAD (PR branch)
     try {
-      newCode = await fs.readFile(filename, "utf8");
+      newCode = await git.show([`HEAD:${filename}`]);
     } catch {
-      // Fallback: try to get from HEAD
-      try {
-        newCode = await git.show([`HEAD:${filename}`]);
-      } catch {
-        console.warn(`❌ Could not read ${filename} from local or HEAD`);
-        continue; // skip this file if we can't read new code
-      }
+      console.warn(`❌ Could not read ${filename} from HEAD (PR branch)`);
+      continue;
     }
 
     results.push({

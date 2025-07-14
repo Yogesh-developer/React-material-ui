@@ -70,8 +70,6 @@ import { getJiraDetails } from "./getJiraDescription.mjs";
       }
     }
 
-    console.log("✅ Final AI Review Comments:", allComments);
-
     const existingComments = await fetchExistingComments();
     const finalComments = removeDuplicateComment(allComments, existingComments);
 
