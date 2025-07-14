@@ -8,85 +8,73 @@ import { postInlineReview } from "./postGitComments.mjs";
 import { fetchExistingComments } from "./getPreviousGitComments.mjs";
 import { removeDuplicateComment } from "./newComments.mjs";
 import { getJiraDetails } from "./getJiraDescription.mjs";
-import { mergeAndDeduplicateAstChanges } from "./astCodeMerge.mjs";
+
 (async () => {
   try {
-    // const diffText = await getChangedFileVersions();
-    // const jiraContext = await getJiraDetails("CRM-3");
-    // const allComments = [];
+    const diffText = await getChangedFileVersions();
+    const jiraContext = await getJiraDetails("CRM-3");
+    const allComments = [];
 
-    // for (const diffFile of diffText) {
-    //   const { file, patch, newCode } = diffFile;
-    //   const astChanges = extractChangedFunctionsFromFile(patch, newCode, file);
-    //   const aiComments = [];
+    for (const diffFile of diffText) {
+      const { file, patch, newCode } = diffFile;
+      const astChanges = extractChangedFunctionsFromFile(patch, newCode, file);
+      const aiComments = [];
 
-    //   for (const astChange of astChanges) {
-    //     const suggestion = await reviewWithOllama({
-    //       patch,
-    //       ast_changes: astChange,
-    //       jiraContext,
-    //       file,
-    //     });
+      for (const astChange of astChanges) {
+        const suggestion = await reviewWithOllama({
+          patch,
+          ast_changes: astChange,
+          jiraContext,
+          file,
+        });
 
-    //     const parsed = jsonParser(suggestion);
-    //     if (!parsed?.comments || !Array.isArray(parsed.comments)) continue;
+        const parsed = jsonParser(suggestion);
+        if (!parsed?.comments || !Array.isArray(parsed.comments)) continue;
 
-    //     aiComments.push(...parsed.comments);
-    //   }
+        aiComments.push(...parsed.comments);
+      }
 
-    //   const fullDiff = `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n${patch}`;
-    //   const parsedDiff = parseDiff(fullDiff);
+      const fullDiff = `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n${patch}`;
+      const parsedDiff = parseDiff(fullDiff);
 
-    //   const normalizePath = (p) => p?.replace(/^([ab]\/)/, "");
-    //   const fileDiff = parsedDiff.find(
-    //     (d) => normalizePath(d.to) === normalizePath(file)
-    //   );
+      const normalizePath = (p) => p?.replace(/^([ab]\/)/, "");
+      const fileDiff = parsedDiff.find(
+        (d) => normalizePath(d.to) === normalizePath(file)
+      );
 
-    //   if (!fileDiff) {
-    //     console.warn(`⚠️ Diff not found for ${file}`);
-    //     continue;
-    //   }
+      if (!fileDiff) {
+        console.warn(`⚠️ Diff not found for ${file}`);
+        continue;
+      }
 
-    //   for (const comment of aiComments) {
-    //     const { line, summary, suggestion } = comment;
-    //     const position = getDiffPosition(fileDiff, line);
+      for (const comment of aiComments) {
+        const { line, summary, suggestion } = comment;
+        const position = getDiffPosition(fileDiff, line);
 
-    //     if (typeof position !== "number") {
-    //       console.warn(
-    //         `⚠️ Could not map line ${line} to diff position in ${file}`
-    //       );
-    //       continue;
-    //     }
+        if (typeof position !== "number") {
+          console.warn(
+            `⚠️ Could not map line ${line} to diff position in ${file}`
+          );
+          continue;
+        }
 
-    //     const formattedSuggestion = suggestion.includes("```js")
-    //       ? suggestion
-    //       : `\`\`\`js\n${suggestion.trim()}\n\`\`\``;
+        const formattedSuggestion = suggestion.includes("```js")
+          ? suggestion
+          : `\`\`\`js\n${suggestion.trim()}\n\`\`\``;
 
-    //     allComments.push({
-    //       path: file,
-    //       position,
-    //       body: `### 🔍 ${summary}\n\n${formattedSuggestion}`,
-    //     });
-    //   }
-    // }
+        allComments.push({
+          path: file,
+          position,
+          body: `### 🔍 ${summary}\n\n${formattedSuggestion}`,
+        });
+      }
+    }
 
-    // console.log("✅ Final AI Review Comments:", allComments);
+    console.log("✅ Final AI Review Comments:", allComments);
 
-    // // Optional: Dedup & post
-    // const existingComments = await fetchExistingComments();
-    // const finalComments = removeDuplicateComment(allComments, existingComments);
-    const finalComments = [
-      {
-        path: "pages/contact.tsx",
-        position: 5,
-        body: "💡 Consider using a more descriptive variable name here.",
-      },
-      {
-        path: "pages/index.tsx",
-        position: 25,
-        body: "✅ Good use of utility function! You might want to add input validation.",
-      },
-    ];
+    const existingComments = await fetchExistingComments();
+    const finalComments = removeDuplicateComment(allComments, existingComments);
+
     await postInlineReview(finalComments);
   } catch (err) {
     console.error("💥 Review failed:", err);
