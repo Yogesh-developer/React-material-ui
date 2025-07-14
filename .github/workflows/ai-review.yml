@@ -5,9 +5,8 @@ on:
     types: [labeled]
 
 permissions:
-  issues: write
-  pull-requests: write
   contents: read
+  pull-requests: write
 
 jobs:
   run-on-label:
@@ -15,36 +14,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/setup-node@v3
         with:
           node-version: 20
 
       - name: Create .env file
         run: |
-          echo "GITHUB_APP_ID=${{ secrets.APP_ID }}" >> .env
-          echo "GITHUB_INSTALLATION_ID=${{ secrets.INSTALLATION_ID }}" >> .env
-          echo "APP_PRIVATE_KEY='${{ secrets.APP_PRIVATE_KEY }}'" >> .env
-          echo "JIRA_DOMAIN=${{ secrets.JIRA_DOMAIN }}" >> .env
-          echo "JIRA_EMAIL=${{ secrets.JIRA_EMAIL }}" >> .env
-          echo "JIRA_TOKEN=${{ secrets.JIRA_TOKEN }}" >> .env
-          echo "GITHUB_TOKEN=${{ secrets.MY_GITHUB_TOKEN }}" >> .env
-          echo "TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}" >> .env
-          echo "REPO_OWNER=${{ github.repository_owner }}" >> .env
-          echo "REPO_NAME=${{ github.event.repository.name }}" >> .env
-          echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> .env
+          cat <<EOF > .env
+          GITHUB_APP_ID=${{ secrets.APP_ID }}
+          GITHUB_INSTALLATION_ID=${{ secrets.INSTALLATION_ID }}
+          APP_PRIVATE_KEY=${{ secrets.APP_PRIVATE_KEY }}
+          JIRA_DOMAIN=${{ secrets.JIRA_DOMAIN }}
+          JIRA_EMAIL=${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN=${{ secrets.JIRA_TOKEN }}
+          GITHUB_TOKEN=${{ secrets.MY_GITHUB_TOKEN }}
+          TOGETHER_API_KEY=${{ secrets.TOGETHER_API_KEY }}
+          REPO_OWNER=${{ github.repository_owner }}
+          REPO_NAME=${{ github.event.repository.name }}
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          EOF
 
       - name: Install pnpm
         run: npm install -g pnpm
 
       - name: Install dependencies
         run: pnpm install
+
+      - name: Debug files
+        run: ls -R
 
       - name: Run AI Code Review Bot
         run: node ai-code-review/review.mjs
