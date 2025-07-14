@@ -1,4 +1,3 @@
-// getChangedFileVersions.mjs
 import { Octokit } from "@octokit/rest";
 import simpleGit from "simple-git";
 import { config } from "dotenv";
@@ -36,24 +35,36 @@ export async function getChangedFileVersions() {
 
   for (const file of files) {
     const { filename, status, patch } = file;
-    if (status === "removed" || !patch) continue;
+
+    if (status === "removed" || !patch) {
+      console.warn(`⚠️ Skipping removed or empty file: ${filename}`);
+      continue;
+    }
 
     let oldCode = null;
     let newCode = null;
 
+    // Get old code from BASE_REF (e.g., main)
     try {
-      oldCode = await git.show([`${BASE_REF}:${filename}`]);
+      if (status !== "added") {
+        oldCode = await git.show([`${BASE_REF}:${filename}`]);
+      }
     } catch {
-      console.warn(`⚠️ ${filename} is likely a new file (not in ${BASE_REF})`);
+      console.warn(
+        `⚠️ Could not read old version of ${filename} from ${BASE_REF}`
+      );
     }
 
+    // Get new code from working directory first
     try {
       newCode = await fs.readFile(filename, "utf8");
     } catch {
+      // Fallback: try to get from HEAD
       try {
         newCode = await git.show([`HEAD:${filename}`]);
       } catch {
         console.warn(`❌ Could not read ${filename} from local or HEAD`);
+        continue; // skip this file if we can't read new code
       }
     }
 
