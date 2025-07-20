@@ -1,7 +1,6 @@
 import path from "path";
 import fetch from "node-fetch";
 import { config } from "dotenv";
-import { codeReviewPrompt } from "./prompt.mjs";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,14 +10,7 @@ config({ path: path.resolve(__dirname, "../.env") });
 
 const { TOGETHER_API_KEY } = process.env;
 
-export async function reviewWithOllama({
-  ast_changes,
-  jiraContext,
-  file,
-  patch,
-}) {
-  const prompt = codeReviewPrompt(ast_changes, jiraContext, file, patch);
-
+export async function getLLMReview(prompt) {
   const res = await fetch("https://api.together.xyz/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -33,7 +25,6 @@ export async function reviewWithOllama({
     }),
   });
 
-  if (!res.ok) throw new Error(`Error: ${res.status} ${res.statusText}`);
   const data = await res.json();
-  return data.choices?.[0]?.message?.content;
+  return data.choices?.[0]?.message?.content || "No response from model.";
 }
