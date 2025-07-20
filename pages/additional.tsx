@@ -119,6 +119,16 @@ export class AdditionalInfo extends Component<IPropsAdd> {
                     onChange={() => handleChange("Department")}
                   />
                 </div>
+                <div>
+                  <MyTextField
+                    style={{ width: "60%" }}
+                    placeholder="ØªÙØ§Ù ÙÙØª"
+                    name="WType"
+                    type="input"
+                    defaultValue={values3.WType}
+                    onChange={() => handleChange("WType")}
+                  />
+                </div>
                 <label className="labelll">Ø­ÙÙÙ Ù¾ÛØ´ÙÙØ§Ø¯Û</label>
                 <div>
                   <MyTextField
