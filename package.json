@@ -13,8 +13,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@babel/generator": "^7.28.0",
     "@babel/parser": "^7.28.0",
     "@babel/traverse": "^7.28.0",
+    "@babel/types": "^7.28.1",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^7.2.0",
@@ -26,6 +28,7 @@
     "@octokit/rest": "^22.0.0",
     "@parcel/transformer-postcss": "^2.8.3",
     "axios": "^1.10.0",
+    "crypto": "^1.0.1",
     "dotenv": "^17.2.0",
     "jsonrepair": "^3.13.0",
     "next": "^15.3.3",
@@ -33,7 +36,9 @@
     "parse-diff": "^0.11.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "simple-git": "^3.28.0"
+    "simple-git": "^3.28.0",
+    "string-similarity": "^4.0.4",
+    "yaml": "^2.8.0"
   },
   "devDependencies": {
     "@types/node": "24.0.1",
