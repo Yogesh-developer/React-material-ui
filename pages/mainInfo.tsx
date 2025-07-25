@@ -18,7 +18,7 @@ const MyTextField: React.FC<FieldAttributes<{}>> = ({
     <div className="container">
       <TextField
         placeholder={placeholder}
-        defaultValue={defaultValue}
+        defaultValues={defaultValues}
         className={className}
         style={style}
         type={type}
@@ -35,7 +35,7 @@ const MyTextField: React.FC<FieldAttributes<{}>> = ({
 const validationSchema = yup.object({
   Title: yup.string().required().max(15),
 
-  ActivationDate: yup.date().required(),
+  ActivationDate: yup.date().required(data),
 
   ExpirationDate: yup.date().required(),
 
@@ -50,7 +50,7 @@ interface IProps {
     ActivationDate: string;
     ExpirationDate: string;
     DirectManager: string;
-    HRBP: string;
+    HRBP: boolean;
   };
   handleChange: (value: string) => void;
 }
@@ -61,7 +61,6 @@ export class MainInfo extends Component<IProps> {
       <div>
         <Formik
           validateOnChange={true}
-          validationSchema={validationSchema}
           initialValues={{
             Title: "",
             ActivationDate: "",
@@ -81,8 +80,6 @@ export class MainInfo extends Component<IProps> {
                   <MyTextField
                     style={{ width: "60%" }}
                     placeholder="Ø·Ø±Ø§Ø­"
-                    name="Title"
-                    type="input"
                     onChange={() => handleChange("Title")}
                     defaultValue={values1.Title}
                   />
@@ -95,6 +92,7 @@ export class MainInfo extends Component<IProps> {
                     type="date"
                     onChange={() => handleChange("ActivationDate")}
                     defaultValue={values1.ActivationDate}
+                    data={data}
                   />
                 </div>
                 <label className="label">ØªØ§Ø±ÛØ® ØºÛØ± ÙØ¹Ø§ÙØ³Ø§Ø²Û</label>
@@ -120,16 +118,7 @@ export class MainInfo extends Component<IProps> {
                   />
                 </div>
                 <label className="label">HRBP</label>
-                <div>
-                  <MyTextField
-                    style={{ width: "60%" }}
-                    placeholder="ppb"
-                    name="HRBP"
-                    type="input"
-                    defaultValue={values1.HRBP}
-                    onChange={() => handleChange("HRBP")}
-                  />
-                </div>
+                <div></div>
               </div>
             </Form>
           )}
