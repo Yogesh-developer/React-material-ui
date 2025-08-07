@@ -1,0 +1,1246 @@
+===== parseAIFeedback.mjs =====
+import yaml from "yaml";
+
+export function parseYamlComments(response) {
+  const match = response.match(/```yaml\s*([\s\S]*?)```/i);
+  if (!match) {
+    console.warn("No YAML code block found in response.");
+    return [];
+  }
+
+  const yamlContent = match[1].trim();
+
+  let parsed;
+  try {
+    parsed = yaml.parse(yamlContent);
+  } catch (e) {
+    console.error("YAML parsing error:", e.message);
+    return [];
+  }
+
+  const comments = parsed?.comments || [];
+
+  // Optional: filter out entries with missing 'match' or 'body'
+  return comments.filter(
+    (comment) =>
+      typeof comment.match === "string" &&
+      typeof comment.body === "string" &&
+      comment.match.trim() !== "" &&
+      comment.body.trim() !== ""
+  );
+}
+
+
+===== config/setting.mjs =====
+export function getSettings(contextLines = null) {
+  return {
+    config: {
+      patch_extension_skip_types: [".md", ".txt"],
+      allow_dynamic_context: true,
+      max_extra_lines_before_dynamic_context: 8,
+      patch_extra_lines_before: 3,
+      patch_extra_lines_after: 1,
+    },
+  };
+}
+
+
+===== contextParser.mjs =====
+// contextParser.mjs
+import path from "path";
+
+/**
+ * Parses all import statements from the given file content and resolves them to possible paths.
+ * Returns a **deduplicated** list of imports.
+ */
+export function parseImports(fileContent, filePath) {
+  const seenImportPaths = new Set();
+  const imports = [];
+
+  const importRegex =
+    /import\s*(?:(?:(?:[\w*{}\n\r\t, ]+)\s+from\s+)?['"]([^'"]+)['"]|['"]([^'"]+)['"])/g;
+
+  let match;
+  while ((match = importRegex.exec(fileContent)) !== null) {
+    const importPath = match[1] || match[2];
+    if (!importPath || !importPath.startsWith(".")) continue; // ❌ Skip node_modules, @mui, etc.
+
+    if (seenImportPaths.has(importPath)) continue;
+    seenImportPaths.add(importPath);
+
+    const dir = path.dirname(filePath);
+    const resolvedBase = path.join(dir, importPath);
+
+    imports.push({
+      importPath,
+      path: resolvedBase,
+    });
+  }
+
+  return imports;
+}
+
+// Find used functions in changed lines
+export function findUsedFunctions(changedLines) {
+  const usedFunctions = new Set();
+
+  // Function call patterns
+  const patterns = [
+    /\b(\w+)\(/g, // function calls
+    /<(\w+)\s+/g, // JSX components
+    /\.(\w+)\s*\(/g, // method calls
+  ];
+
+  for (const line of changedLines) {
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(line)) !== null) {
+        usedFunctions.add(match[1]);
+      }
+    }
+  }
+
+  return Array.from(usedFunctions);
+}
+
+// Check if function is defined in the diff
+export function isFunctionInDiff(functionName, diffContent) {
+  // Look for function definitions in the diff
+  const patterns = [
+    new RegExp(`\\bfunction\\s+${functionName}\\s*\\(`),
+    new RegExp(`\\bconst\\s+${functionName}\\s*=\\s*(function|\\()`, "i"),
+    new RegExp(`\\blet\\s+${functionName}\\s*=\\s*(function|\\()`, "i"),
+    new RegExp(`\\bvar\\s+${functionName}\\s*=\\s*(function|\\()`, "i"),
+    new RegExp(`\\bclass\\s+${functionName}\\b`),
+  ];
+
+  return patterns.some((pattern) => pattern.test(diffContent));
+}
+
+export function getFunctionDefinition(identifier, fileContent) {
+  const lines = fileContent.split("\n");
+  const funcStartRegex = new RegExp(
+    `(?:export\\s+)?(function|const|let|var|class)\\s+${identifier}\\b`
+  );
+
+  let inFunction = false;
+  let braceCount = 0;
+  let collected = [];
+
+  for (const line of lines) {
+    if (!inFunction && funcStartRegex.test(line)) {
+      inFunction = true;
+    }
+
+    if (inFunction) {
+      collected.push(line);
+
+      // Track braces for function body
+      for (const char of line) {
+        if (char === "{") braceCount++;
+        else if (char === "}") braceCount--;
+      }
+
+      if (braceCount === 0 && collected.length > 1) {
+        break;
+      }
+    }
+  }
+
+  if (collected.length === 0) return null;
+
+  // ✅ Show first 6 and last 6 lines only
+  const head = collected.slice(0, 6);
+  const tail = collected.slice(-6);
+  const shown =
+    collected.length > 12 ? [...head, "// ...", ...tail] : collected;
+
+  return shown.join("\n");
+}
+
+
+===== reviewWithAi.mjs =====
+import path from "path";
+import fetch from "node-fetch";
+import { config } from "dotenv";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+config({ path: path.resolve(__dirname, "../.env") });
+
+const { TOGETHER_API_KEY } = process.env;
+
+export async function getLLMReview(prompt) {
+  const res = await fetch("https://api.together.xyz/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${TOGETHER_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "deepseek-ai/DeepSeek-V3",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.4,
+      max_tokens: 1024,
+    }),
+  });
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "No response from model.";
+}
+
+
+===== getAIFeedback.mjs =====
+
+
+===== prReviewPrompt.mjs =====
+// export function buildReviewPrompt(extendedPatch, extraInstructions = "") {
+//   return (
+//     `
+// You are an experienced software engineer helping review a GitHub pull request.
+
+// You will be given a unified diff of one or more source files. Your task is to analyze **only the newly added code** (lines starting with \`+\`) and return precise **inline comments** and **optional code suggestions**.
+
+// ---
+
+// 🧠 Focus on:
+// - Bugs, logic issues, security concerns
+// - Unmaintainable patterns, repetition, unclear names
+// - Code style inconsistencies or anti-patterns
+// - Inline suggestions for small local improvements (2–6 lines max)
+
+// ⚠️ Only review the new lines (` +
+//     `). Do not comment on removed or unchanged code. Don't guess about unseen context.
+
+// ---
+
+// 💬 Output must be valid YAML in this exact format:
+
+// \`\`\`yaml
+// comments:
+//   - match: "<exact line of newly added code>"
+//     body: "<concise review comment>"
+//     suggestion: |
+//       <replacement line>
+//   - ...
+// \`\`\`
+
+// 🟡 Notes:
+// - \`match\` must match a full newly added line exactly, excluding the '+'.
+// - \`suggestion\` is optional. If not needed, omit it entirely.
+// - Don't write generic comments. Make each one actionable and local.
+
+// ${
+//   extraInstructions ? `📝 Extra instructions:\n${extraInstructions.trim()}` : ""
+// }
+
+// ---
+
+// ### Example
+
+// #### Input Diff:
+// \`\`\`diff
+// @@ -0,0 +1,5 @@
+// +function add(a, b) {
+// +  return a + b
+// +}
+// \`\`\`
+
+// #### Your Output:
+// \`\`\`yaml
+// comments:
+//   - match: "return a + b"
+//     body: "Consider adding a semicolon for consistency and to avoid ASI issues."
+//     suggestion: |
+//        return a + b;
+// \`\`\`
+
+// ---
+// 📦 Diff to review:
+// \`\`\`diff
+// ${extendedPatch}
+// \`\`\`
+// `
+//   );
+// }
+
+// export function buildReviewPrompt(extendedPatch, extraInstructions = "") {
+//   return `You are a senior frontend architect specializing in React and Material-UI. Perform a rigorous code review focusing on these critical areas:
+
+// You will be given a unified diff of one or more source files. Your task is to analyze **only the newly added code** (lines starting with \`+\`) and return precise **inline comments** and **optional code suggestions**.
+
+// ### 🎯 Mandatory Review Priorities
+// 1. **Accessibility Violations** (WCAG 2.1 AA):
+//    - Missing keyboard navigation (tabIndex, focus management)
+//    - Insufficient color contrast (use MUI theme contrast checker)
+//    - Missing ARIA attributes (roles, labels, descriptions)
+//    - Improper form labeling and validation
+//    - Screen reader incompatibilities
+
+// 2. **MUI Anti-Patterns**:
+//    - Direct style overrides instead of using \`sx\` prop
+//    - Unoptimized component imports (full vs. path imports)
+//    - Hardcoded colors instead of theme variables
+//    - Missing responsive behavior (breakpoint handling)
+//    - Incorrect theming implementation
+
+// 3. **React Performance & Correctness**:
+//    - Unnecessary re-renders (missing memoization)
+//    - State management errors (stale state, improper updates)
+//    - Memory leaks (missing cleanup in useEffect)
+//    - Invalid hook calls/custom hook violations
+//    - Prop drilling where context would be better
+
+// 4. **Security & Reliability**:
+//    - XSS vulnerabilities (unsanitized content)
+//    - Sensitive data exposure
+//    - API error handling gaps
+//    - Race conditions in async operations
+//    - Missing loading/error states
+
+// ### 🚫 Absolute No-Nos
+// - Missing \`alt\` text on images
+// - Non-semantic HTML (div soup)
+// - Console.log in production code
+// - Missing \`key\` props in lists
+// - Inline functions causing re-renders
+
+// 🟡 Notes:
+// - \`match\` must match a full newly added line exactly, excluding the '+'.
+// - \`suggestion\` is optional. If not needed, omit it entirely.
+// - Don't write generic comments. Make each one actionable and local.
+
+// ### 📝 Output Format (STRICT YAML)
+// \`\`\`yaml
+// comments:
+//   - match: "<exact added line>"
+//     body: |
+//       <concise problem description>
+//     suggestion: |
+//       <replacement code (2-6 lines max)>
+//   - ...
+// \`\`\`
+
+// ### ✨ Elite Reviewer Standards
+// - **Be surgical**: Only comment on critical issues with clear fixes
+// - **Cite standards**: Reference specific ESLint rules (airbnb/react preferred) or WCAG criteria
+// - **MUI Mastery**: Recommend optimized MUI patterns (customization via theme, system props)
+// - **Prove impact**: Quantify performance implications (e.g., "Causes O(n²) re-renders")
+// - **Offer solutions**: Always provide copy-paste ready fixes
+
+// ### 🧩 Example Review
+// #### Input Diff:
+// \`\`\`diff
+// @@ -12,3 +12,7 @@ export default function Button() {
+//    >
+// -    <span>Submit</span>
+// +    <div>Submit</div>
+// \`\`\`
+
+// #### Your Output:
+// \`\`\`yaml
+// comments:
+//   - match: "<div>Submit</div>"
+//     body: |
+//       Non-semantic button content reduces accessibility.
+//     suggestion: |
+//       <Typography component="span">Submit</Typography>
+// \`\`\`
+
+// ### 📦 Code to Review
+// \`\`\`diff
+// ${extendedPatch}
+// \`\`\`
+
+// ${
+//   extraInstructions
+//     ? `### 🚨 Client-Specific Requirements\n${extraInstructions.trim()}`
+//     : ""
+// }`;
+// }
+
+// export function buildReviewPrompt(
+//   extendedPatch,
+//   extraContext = "",
+//   extraInstructions = ""
+// ) {
+//   return `You are a senior frontend architect specializing in React and Material-UI. Perform a rigorous code review focusing on these critical areas:
+
+// You will be given a unified diff of one or more source files. Your task is to analyze **only the newly added code** (lines starting with \`+\`) and return precise **inline comments** and **optional code suggestions**.
+
+// ### 🎯 Mandatory Review Priorities
+// 1. **Accessibility Violations** (WCAG 2.1 AA):
+//    - Missing keyboard navigation (tabIndex, focus management)
+//    - Insufficient color contrast (use MUI theme contrast checker)
+//    - Missing ARIA attributes (roles, labels, descriptions)
+//    - Improper form labeling and validation
+//    - Screen reader incompatibilities
+// 2. **MUI Anti-Patterns**:
+//    - Direct style overrides instead of using \`sx\` prop
+//    - Unoptimized component imports (full vs. path imports)
+//    - Hardcoded colors instead of theme variables
+//    - Missing responsive behavior (breakpoint handling)
+//    - Incorrect theming implementation
+// 3. **React Performance & Correctness**:
+//    - Unnecessary re-renders (missing memoization)
+//    - State management errors (stale state, improper updates)
+//    - Memory leaks (missing cleanup in useEffect)
+//    - Invalid hook calls/custom hook violations
+//    - Prop drilling where context would be better
+// 4. **Security & Reliability**:
+//    - XSS vulnerabilities (unsanitized content)
+//    - Sensitive data exposure
+//    - API error handling gaps
+//    - Race conditions in async operations
+//    - Missing loading/error states
+// ### 🚫 Absolute No-Nos
+// - Missing \`alt\` text on images
+// - Non-semantic HTML (div soup)
+// - Console.log in production code
+// - Missing \`key\` props in lists
+// - Inline functions causing re-renders
+// 🟡 Notes:
+// - \`match\` must match a full newly added line exactly, excluding the '+'.
+// - \`suggestion\` is optional. If not needed, omit it entirely.
+// - Don't write generic comments. Make each one actionable and local.
+
+// ### 📝 Output Format (STRICT YAML)
+// \`\`\`yaml
+// comments:
+//   - match: "<exact added line>"
+//     body: |
+//       <concise problem description>
+//     suggestion: |
+//       <replacement code (2-6 lines max)>
+//   - ...
+// \`\`\`
+// ### ✨ Elite Reviewer Standards
+// - **Be surgical**: Only comment on critical issues with clear fixes
+// - **Cite standards**: Reference specific ESLint rules (airbnb/react preferred) or WCAG criteria
+// - **MUI Mastery**: Recommend optimized MUI patterns (customization via theme, system props)
+// - **Prove impact**: Quantify performance implications (e.g., "Causes O(n²) re-renders")
+// - **Offer solutions**: Always provide copy-paste ready fixes
+// ### 🧩 Example Review
+// #### Input Diff:
+// \`\`\`diff
+// @@ -12,3 +12,7 @@ export default function Button() {
+//    >
+// -    <span>Submit</span>
+// +    <div>Submit</div>
+// \`\`\`
+
+// #### Your Output:
+// \`\`\`yaml
+// comments:
+//   - match: "<div>Submit</div>"
+//     body: |
+//       Non-semantic button content reduces accessibility.
+//     suggestion: |
+//       <Typography component="span">Submit</Typography>
+// \`\`\`
+// ### 🔍 Cross-File Context
+// ${extraContext || "// No additional context needed"}
+
+// ### 📦 Code to Review
+// \`\`\`diff
+// ${extendedPatch}
+// \`\`\`
+// ${
+//   extraInstructions
+//     ? `### 🚨 Client-Specific Requirements\n${extraInstructions.trim()}`
+//     : ""
+// }`;
+// }
+
+export function buildReviewPrompt(
+  extendedPatch,
+  extraContext = "",
+  extraInstructions = ""
+) {
+  return `You are a senior frontend engineer and pull request reviewer.
+
+You will be given:
+1. A code diff with newly added lines only
+2. Optional cross-file context (functions/components referenced)
+3. Optional business context or description
+
+---
+
+🧠 Your job:
+- Analyze the added code **line-by-line**
+- Review it **in the context of the surrounding logic and referenced files**
+- Use definitions provided in the cross-file context when functions/components are used
+- Identify:
+  - ❌ Bugs or logic errors
+  - 💥 Missed edge cases or business violations
+  - 🔐 Security issues or unsafe patterns
+  - 🔁 Performance problems
+  - 🎨 Styling or accessibility gaps (MUI/React/Web)
+
+---
+
+📦 Example:
+If the diff uses \`getDiscountForCoupon(code)\` and it's defined in the context block, understand what that function does and whether it's being used correctly.
+
+---
+
+🎯 Review Instructions:
+- Focus only on added lines (\`+\`)
+- Provide precise, actionable inline comments
+- Reference variables, logic, and flow clearly
+- Use cross-file context to resolve function/component logic
+
+---
+
+🧩 Cross-File Context:
+${extraContext || "// No additional context provided"}
+
+---
+
+📄 Diff to Review:
+\`\`\`diff
+${extendedPatch}
+\`\`\`
+
+${
+  extraInstructions
+    ? `### 🚨 Business Requirements:\n${extraInstructions.trim()}`
+    : ""
+}
+
+---
+
+📝 Output Format:
+\`\`\`yaml
+comments:
+  - match: '<exact added line>'
+    body: |
+      <your inline comment>
+    suggestion: |
+      <optional code suggestion (2–6 lines)>
+\`\`\`
+`;
+}
+
+
+===== getJiraDescription.mjs =====
+import axios from "axios";
+import path from "path";
+import { config } from "dotenv";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+config({ path: path.resolve(__dirname, "../.env") });
+
+const { JIRA_EMAIL, JIRA_TOKEN, JIRA_DOMAIN } = process.env;
+
+function extractTextFromADF(node) {
+  if (!node) return "";
+
+  if (Array.isArray(node)) {
+    return node.map(extractTextFromADF).join("\n");
+  }
+
+  if (node.type === "text") {
+    return node.text || "";
+  }
+
+  if (node.content) {
+    return extractTextFromADF(node.content);
+  }
+
+  return "";
+}
+
+export const getJiraDetails = async (jiraID) => {
+  const url = `https://${JIRA_DOMAIN}/rest/api/3/issue/${jiraID}`;
+  const auth = Buffer.from(`${JIRA_EMAIL}:${JIRA_TOKEN}`).toString("base64");
+
+  try {
+    const res = await axios.get(url, {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+      },
+    });
+
+    const { summary, description } = res.data.fields;
+    const title = summary;
+    const descText = extractTextFromADF(description?.content);
+    return ` ${title},
+      ${descText}`;
+  } catch (error) {
+    console.error(`❌ Failed to fetch JIRA ${jiraID}:`, error.message);
+    return "";
+  }
+};
+
+
+===== reviewBot.mjs =====
+import path from "path";
+import { config } from "dotenv";
+import { fileURLToPath } from "url";
+import {
+  fetchPRFiles,
+  fetchPullRequest,
+  fetchRawFile,
+  getInlineCommentLocations,
+  getLatestCommitSha,
+  createReviewWithComments,
+  fetchExistingComments,
+  fetchFileContent,
+} from "./fetchPRFiles.mjs";
+import { buildFullContextDiff } from "./buildFullContextDiff.mjs";
+import { getSettings } from "./config/setting.mjs";
+import { getLLMReview } from "./reviewWithAi.mjs";
+import { buildReviewPrompt } from "./prReviewPrompt.mjs";
+import { parseYamlComments } from "./parseAIFeedback.mjs";
+import { removeDuplicateComments } from "./commentFilter.mjs";
+import {
+  parseImports,
+  findUsedFunctions,
+  isFunctionInDiff,
+  getFunctionDefinition,
+} from "./contextParser.mjs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+config({ path: path.resolve(__dirname, "../.env") });
+
+const { REPO_OWNER, REPO_NAME, PR_NUMBER } = process.env;
+
+const htmlTags = new Set([
+  "div",
+  "span",
+  "input",
+  "form",
+  "section",
+  "header",
+  "footer",
+  "main",
+  "button",
+  "label",
+  "ul",
+  "li",
+  "a",
+  "p",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "img",
+  "svg",
+  "canvas",
+  "video",
+  "audio",
+  "textarea",
+  "select",
+  "option",
+]);
+
+function isLikelyUserFunction(name, importedNames) {
+  if (!name) return false;
+
+  // Skip native tags
+  if (htmlTags.has(name)) return false;
+
+  // Skip internal/global patterns
+  if (/^use[A-Z]/.test(name)) return false;
+  if (/^set[A-Z]/.test(name)) return false;
+  if (["console", "Math", "JSON", "window", "document", "Intl"].includes(name))
+    return false;
+
+  // Allow JSX only if explicitly imported
+  if (/^[A-Z]/.test(name)) {
+    return importedNames.includes(name);
+  }
+
+  return true;
+}
+
+export async function getCrossFileContext(
+  file,
+  newFileCode,
+  changedLines,
+  diffContent,
+  owner,
+  repo,
+  ref
+) {
+  let context = "";
+  //console.log(`🔍 Analyzing ${file.filename} for cross-file context...`);
+
+  const rawImports = parseImports(newFileCode, file.filename);
+  const seen = new Set();
+  const imports = rawImports.filter((imp) => {
+    if (seen.has(imp.importPath)) return false;
+    seen.add(imp.importPath);
+    return true;
+  });
+
+  const importedNames = imports.map((i) =>
+    path.basename(i.importPath).replace(/\.[^/.]+$/, "")
+  );
+
+  // console.log(
+  //   `- Found ${imports.length} imports:`,
+  //   imports.map((i) => i.importPath).join(", ") || "none"
+  // );
+
+  const usedFunctions = findUsedFunctions(changedLines);
+  //console.log(`- Used functions:`, usedFunctions.join(", ") || "none");
+
+  const functionsToFetch = usedFunctions.filter(
+    (func) =>
+      !isFunctionInDiff(func, diffContent) &&
+      isLikelyUserFunction(func, importedNames)
+  );
+
+  // console.log(`- Functions to fetch:`, functionsToFetch.join(", ") || "none");
+
+  const extensions = [
+    ".tsx",
+    ".ts",
+    ".jsx",
+    ".js",
+    "/index.tsx",
+    "/index.ts",
+    "/index.jsx",
+    "/index.js",
+  ];
+
+  for (const imp of imports) {
+    let resolved = false;
+    for (const ext of extensions) {
+      const testPath = imp.path + ext;
+      // console.log(`- Trying: ${testPath}`);
+      const importedFileContent = await fetchFileContent(
+        owner,
+        repo,
+        ref,
+        testPath
+      );
+      if (!importedFileContent) continue;
+
+      for (const func of functionsToFetch) {
+        const funcDef = getFunctionDefinition(func, importedFileContent);
+        if (funcDef) {
+          context += `\n// Context from ${imp.importPath} - ${func}\n`;
+          context += funcDef + "\n";
+        }
+      }
+
+      resolved = true;
+      break;
+    }
+
+    if (!resolved) {
+      console.log(`  ❗ No file found for: ${imp.importPath}`);
+    }
+  }
+
+  return context;
+}
+
+async function reviewPullRequest({ owner, repo, pull_number }) {
+  const files = await fetchPRFiles(owner, repo, pull_number);
+  const prData = await fetchPullRequest(owner, repo, pull_number);
+
+  for (const file of files) {
+    if (!file.patch || file.status === "removed") continue;
+
+    const isNewFile = file.patch.startsWith("@@ -1,0");
+    const rawCode = isNewFile
+      ? ""
+      : await fetchRawFile(owner, repo, prData.base.ref, file.filename);
+    const newFileCode = await fetchRawFile(
+      owner,
+      repo,
+      prData.head.ref,
+      file.filename
+    );
+
+    const settings = getSettings();
+    const extendedPatch = buildFullContextDiff(
+      rawCode,
+      file.patch,
+      settings.config.patch_extra_lines_before,
+      settings.config.patch_extra_lines_after,
+      file.filename,
+      newFileCode
+    );
+
+    // Get changed lines for context analysis
+    const changedLines = file.patch
+      .split("\n")
+      .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+      .map((line) => line.substring(1));
+
+    // Get cross-file context
+    const crossFileContext = await getCrossFileContext(
+      file,
+      newFileCode,
+      changedLines,
+      file.patch,
+      owner,
+      repo,
+      prData.head.ref
+    );
+
+    const review = await getLLMReview(
+      buildReviewPrompt(extendedPatch, crossFileContext)
+    );
+
+    const comments = parseYamlComments(review);
+    const commentLocations = getInlineCommentLocations(extendedPatch, comments);
+    const existingComments = await fetchExistingComments(
+      REPO_OWNER,
+      REPO_NAME,
+      PR_NUMBER
+    );
+
+    const finalComments = removeDuplicateComments(
+      commentLocations,
+      existingComments,
+      file.filename
+    );
+
+    const commit_id = await getLatestCommitSha(
+      REPO_OWNER,
+      REPO_NAME,
+      PR_NUMBER
+    );
+
+    const res = await createReviewWithComments({
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      pull_number: PR_NUMBER,
+      comments: finalComments,
+      commit_id,
+      file_path: file.filename,
+    });
+    console.log(res);
+  }
+}
+
+(async () => {
+  await reviewPullRequest({
+    owner: REPO_OWNER,
+    repo: REPO_NAME,
+    pull_number: PR_NUMBER,
+  });
+})();
+
+
+===== fetchPRFiles.mjs =====
+import { Octokit } from "@octokit/rest";
+import { config } from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+import { paginateRest } from "@octokit/plugin-paginate-rest";
+import { restEndpointMethods } from "@octokit/plugin-rest-endpoint-methods";
+import { createAppAuth } from "@octokit/auth-app";
+
+const MyOctokit = Octokit.plugin(restEndpointMethods, paginateRest);
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+config({ path: path.resolve(__dirname, "../.env") });
+
+const { GITHUB_TOKEN, GITHUB_APP_ID, GITHUB_INSTALLATION_ID, APP_PRIVATE_KEY } =
+  process.env;
+
+const octokit = new Octokit({ auth: GITHUB_TOKEN });
+
+const octokitBot = new MyOctokit({
+  authStrategy: createAppAuth,
+  auth: {
+    appId: GITHUB_APP_ID,
+    privateKey: APP_PRIVATE_KEY,
+    installationId: GITHUB_INSTALLATION_ID,
+  },
+});
+
+export async function fetchPRFiles(owner, repo, pull_number) {
+  const response = await octokit.pulls.listFiles({
+    owner,
+    repo,
+    pull_number,
+  });
+
+  const filesToReview = response.data.filter(
+    (file) => file.status !== "removed"
+  );
+
+  return filesToReview;
+}
+
+export async function fetchPullRequest(owner, repo, pull_number) {
+  const response = await octokit.pulls.get({
+    owner,
+    repo,
+    pull_number,
+  });
+
+  return response.data;
+}
+
+export async function fetchRawFile(owner, repo, ref, path) {
+  try {
+    const { data } = await octokit.repos.getContent({
+      owner,
+      repo,
+      path,
+      ref,
+    });
+
+    if (!data || !data.content) {
+      console.warn(
+        `[fetchRawFileOctokit] No content returned for ${path} at ${ref}`
+      );
+      return "";
+    }
+
+    const decoded = Buffer.from(data.content, data.encoding).toString("utf8");
+    return decoded;
+  } catch (error) {
+    // console.warn(
+    //   `[fetchRawFileOctokit] Failed to fetch ${path} at ${ref}: ${error.message}`
+    // );
+    return "";
+  }
+}
+
+export function getInlineCommentLocations(patch, comments) {
+  const lines = patch.split("\n");
+  const results = [];
+
+  let newLineNum = 0;
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (hunkHeader) {
+      newLineNum = parseInt(hunkHeader[1], 10);
+      i++;
+      while (i < lines.length && !lines[i].startsWith("@@")) {
+        const content = lines[i];
+
+        if (content.startsWith("+") && !content.startsWith("+++")) {
+          const addedLine = content.slice(1);
+
+          comments.forEach((comment) => {
+            if (
+              addedLine.trim() === comment.match.trim() &&
+              !results.find((r) => r.match === comment.match)
+            ) {
+              results.push({
+                match: comment.match,
+                body: comment.body,
+                suggestion: comment.suggestion,
+                line: newLineNum,
+              });
+            }
+          });
+
+          newLineNum++;
+        } else if (!content.startsWith("-")) {
+          newLineNum++;
+        }
+
+        i++;
+      }
+    } else {
+      i++;
+    }
+  }
+
+  return results;
+}
+
+export async function getLatestCommitSha(owner, repo, pull_number) {
+  const pr = await octokit.rest.pulls.get({ owner, repo, pull_number });
+  return pr.data.head.sha;
+}
+
+export async function createReviewWithComments({
+  owner,
+  repo,
+  pull_number,
+  comments,
+  commit_id,
+  file_path,
+}) {
+  const formattedComments = comments
+    .filter((c) => c.body && (!c.suggestion || c.suggestion.trim() !== ""))
+    .map((comment) => {
+      const suggestionBlock = comment.suggestion
+        ? `\n\nSuggestion:\n\`\`\`diff\n${comment.suggestion}\n\`\`\``
+        : "";
+
+      return {
+        path: file_path,
+        line: comment.line,
+        side: "RIGHT",
+        body: `${comment.body}${suggestionBlock}`,
+      };
+    });
+
+  if (!formattedComments.length) {
+    return "No valid comments to post.";
+  }
+
+  const res = await octokitBot.rest.pulls.createReview({
+    owner,
+    repo,
+    pull_number,
+    commit_id,
+    event: "COMMENT",
+    comments: formattedComments,
+  });
+
+  return `✅ Review posted`;
+}
+
+export async function fetchExistingComments(owner, repo, pull_number) {
+  try {
+    const response = await octokit.pulls.listReviewComments({
+      owner,
+      repo,
+      pull_number,
+      per_page: 100,
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error("❌ Failed to fetch PR comments:", error.message);
+    throw error;
+  }
+}
+
+// Add this function to fetch file content
+export async function fetchFileContent(owner, repo, ref, path) {
+  return fetchRawFile(owner, repo, ref, path);
+}
+
+
+===== buildFullContextDiff.mjs =====
+import { getSettings } from "./config/setting.mjs";
+
+function decodeBufferContent(buffer) {
+  const encodings = ["utf-8", "latin1", "ascii", "utf16le"];
+  for (const encoding of encodings) {
+    try {
+      return buffer.toString(encoding);
+    } catch {
+      // Try next encoding
+    }
+  }
+  return "";
+}
+
+export function buildFullContextDiff(
+  originalContent,
+  patchContent,
+  beforeContext = 3,
+  afterContext = 3,
+  filename = "",
+  newFileContent = ""
+) {
+  if (!patchContent) return patchContent;
+
+  // Decode content
+  const original = Buffer.isBuffer(originalContent)
+    ? decodeBufferContent(originalContent)
+    : originalContent;
+  const originalLines = original.split(/\r?\n/);
+  const patchLines = patchContent.split(/\r?\n/);
+
+  // Skip processing for certain file types
+  const skipTypes = getSettings()?.config?.patch_extension_skip_types;
+  if (
+    skipTypes &&
+    filename &&
+    skipTypes.some((ext) => filename.endsWith(ext))
+  ) {
+    return patchContent;
+  }
+
+  let output = [];
+  let currentHunk = null;
+  let hunkContent = [];
+
+  for (let i = 0; i < patchLines.length; i++) {
+    const line = patchLines[i];
+
+    if (line.startsWith("@@")) {
+      // Finalize previous hunk
+      if (currentHunk) {
+        // Add after context
+        if (afterContext > 0) {
+          const endLine = currentHunk.oldStart + currentHunk.oldSize;
+          const contextEnd = Math.min(
+            endLine + afterContext,
+            originalLines.length
+          );
+          const contextLines = originalLines.slice(endLine, contextEnd);
+          hunkContent.push(...contextLines.map((l) => ` ${l}`));
+        }
+        output.push(...hunkContent);
+        output.push(""); // Blank line between hunks
+      }
+
+      // Parse new hunk
+      const match = line.match(
+        /^@@\s-(\d+)(?:,(\d+))?\s\+(\d+)(?:,(\d+))?\s@@\s?(.*)/
+      );
+      if (!match) {
+        currentHunk = null;
+        continue;
+      }
+
+      currentHunk = {
+        oldStart: parseInt(match[1]),
+        oldSize: parseInt(match[2] || "0"),
+        newStart: parseInt(match[3]),
+        newSize: parseInt(match[4] || "0"),
+        section: match[5] || "",
+      };
+
+      // Add before context
+      const contextStart = Math.max(
+        0,
+        currentHunk.oldStart - 1 - beforeContext
+      );
+      const contextLines = originalLines.slice(
+        contextStart,
+        currentHunk.oldStart - 1
+      );
+      hunkContent = [
+        `@@ -${contextStart + 1},${
+          currentHunk.oldSize + beforeContext + afterContext
+        } ` +
+          `+${
+            currentHunk.newStart - (currentHunk.oldStart - contextStart - 1)
+          },` +
+          `${currentHunk.newSize + beforeContext + afterContext} @@ ${
+            currentHunk.section
+          }`,
+        ...contextLines.map((l) => ` ${l}`),
+      ];
+    } else if (currentHunk) {
+      hunkContent.push(line);
+    } else {
+      output.push(line);
+    }
+  }
+
+  // Add final hunk
+  if (currentHunk && hunkContent.length > 0) {
+    // Add after context
+    if (afterContext > 0) {
+      const endLine = currentHunk.oldStart + currentHunk.oldSize;
+      const contextEnd = Math.min(endLine + afterContext, originalLines.length);
+      const contextLines = originalLines.slice(endLine, contextEnd);
+      hunkContent.push(...contextLines.map((l) => ` ${l}`));
+    }
+    output.push(...hunkContent);
+  }
+
+  return output.join("\n");
+}
+
+
+===== commentFilter.mjs =====
+import stringSimilarity from "string-similarity";
+
+function normalizeText(text = "") {
+  return text.replace(/\s+/g, " ").toLowerCase().trim();
+}
+
+function splitBodyAndSuggestion(commentBody = "") {
+  const codeBlockMatch = commentBody.match(/```(?:diff)?\n([\s\S]*?)```/i);
+
+  const suggestion = codeBlockMatch?.[1]?.trim() || null;
+  const body = suggestion
+    ? commentBody.slice(0, codeBlockMatch.index).trim()
+    : commentBody.trim();
+
+  return {
+    body,
+    suggestion,
+  };
+}
+
+function extractExistingBodiesByLocation(existingComments = []) {
+  const map = new Map();
+
+  for (const comment of existingComments) {
+    const path = comment.path;
+    const line = comment.original_line ?? comment.line ?? comment.position;
+    const { body, suggestion } = splitBodyAndSuggestion(comment.body);
+    const normBody = normalizeText(body);
+    const normSuggestion = normalizeText(suggestion || "");
+
+    if (!path || !line || !normBody) continue;
+
+    const key = `${path}:${line}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push({ body: normBody, suggestion: normSuggestion });
+  }
+
+  return map;
+}
+
+export function removeDuplicateComments(
+  newComments = [],
+  existingComments = [],
+  filePath,
+  similarityThreshold = 0.3
+) {
+  const existingByLocation = extractExistingBodiesByLocation(existingComments);
+
+  return newComments.filter((comment) => {
+    const path = filePath;
+    const line = comment.line ?? comment.position;
+    const normBody = normalizeText(comment.body);
+    const normSuggestion = normalizeText(comment.suggestion);
+    if (!path || !line || !normBody) return true;
+
+    const key = `${path}:${line}`;
+    const existingEntries = existingByLocation.get(key) || [];
+
+    for (const {
+      body: existBody,
+      suggestion: existSuggestion,
+    } of existingEntries) {
+      const bodySimilarity = stringSimilarity.compareTwoStrings(
+        normBody,
+        existBody
+      );
+      const suggestionSimilarity = stringSimilarity.compareTwoStrings(
+        normSuggestion,
+        existSuggestion
+      );
+
+      if (
+        bodySimilarity >= similarityThreshold ||
+        suggestionSimilarity >= similarityThreshold
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+
+

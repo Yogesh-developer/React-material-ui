@@ -69,9 +69,9 @@ export async function fetchRawFile(owner, repo, ref, path) {
     const decoded = Buffer.from(data.content, data.encoding).toString("utf8");
     return decoded;
   } catch (error) {
-    console.warn(
-      `[fetchRawFileOctokit] Failed to fetch ${path} at ${ref}: ${error.message}`
-    );
+    // console.warn(
+    //   `[fetchRawFileOctokit] Failed to fetch ${path} at ${ref}: ${error.message}`
+    // );
     return "";
   }
 }
@@ -183,4 +183,9 @@ export async function fetchExistingComments(owner, repo, pull_number) {
     console.error("❌ Failed to fetch PR comments:", error.message);
     throw error;
   }
+}
+
+// Add this function to fetch file content
+export async function fetchFileContent(owner, repo, ref, path) {
+  return fetchRawFile(owner, repo, ref, path);
 }
